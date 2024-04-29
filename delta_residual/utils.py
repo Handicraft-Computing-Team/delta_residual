@@ -1,4 +1,6 @@
 import inspect
+import os
+import sys
 import threading
 from functools import partial
 from typing import Any, Callable, List, Tuple
@@ -10,6 +12,10 @@ import torch.optim as optim
 
 # from delta_residual.general_delta import AbstractDeltaModule
 from loguru import logger
+from torch.multiprocessing import Lock
+
+# logger.remove()
+# logger.add(sys.stderr, level=os.environ.get("LOGLEVEL", "DEBUG"))
 
 
 def get_module_device(model: nn.Module) -> torch.device:
@@ -63,6 +69,11 @@ class ModuleForSelfHook(nn.Module):
         return self.hook_without_self(self.self_delta_model, *args, **kwargs)
 
 
+from torch.nn.parallel.parallel_apply import parallel_apply
+from torch.nn.parallel.replicate import replicate
+from torch.nn.parallel.scatter_gather import gather, scatter_kwargs
+
+
 @ModuleDeviceAddOn
 class AutoToDevice(nn.Module):
     """Some Information about AutoToDevice"""
@@ -70,18 +81,45 @@ class AutoToDevice(nn.Module):
     def __init__(self, original_module: nn.Module):
         super(AutoToDevice, self).__init__()
         self.original_module = original_module
-        self.lock = threading.Lock()  # 保证同时这个Module只在一个device
+        # self.original_module = original_module.cuda() # 使用relicate保证正确
+        self.lock = Lock()  # 保证同时这个Module只在一个device
 
     def forward(self, *args, **kwargs):
         device = get_tuple_device(args)
         if device is None:
             return self.original_module.forward(*args, **kwargs)
         with self.lock:
-            logger.info(
-                f"AutoToDevice: input is from {device}, my device is {self.device}. "
-            )
-            self.to(device)
-            result = self.original_module.forward(*args, **kwargs)
+            backup = self.__class__.__getattr__
+
+            def temp_getattr(self, name: str):
+                if "_parameters" in self.__dict__:
+                    _parameters = self.__dict__["_parameters"]
+                    if name in _parameters:
+                        # return _parameters[name].to(device).requires_grad_()
+                        return _parameters[name]
+                return backup(self, name)
+
+            # self.original_module.__class__.__getattr__ = temp_getattr
+            nn.Module.__getattr__ = temp_getattr
+
+            result = self.original_module(*args, **kwargs)
+
+            # self.original_module.__class__.__getattr__ = backup
+            nn.Module.__getattr__ = backup
+
+            # logger.info(
+            #     f"AutoToDevice: input is from {device}, my device is {self.device}. "
+            # )
+            # self.to(device) # 似乎不行，计算图会中断？
+            # result = self.original_module.forward(*args, **kwargs)
+
+            # dim = 0
+            # device_ids = [device]
+            # # args, kwargs = scatter_kwargs(args, kwargs, device_ids, dim=dim)
+            # replicas = replicate(self.original_module, device_ids)
+            # outputs = parallel_apply(replicas, args, kwargs, device_ids)
+            # result = gather(outputs, device, dim=dim)
+
         return result
 
 
@@ -93,6 +131,7 @@ class AutoDeviceModuleForSelfHook(nn.Module):
         self_delta_model: nn.Module,
         hook_without_self: Callable,
         auto_to_device_cls=AutoToDevice,  # 也可能是 nn.DataParallel
+        # auto_to_device_cls=nn.DataParallel,  # 也可能是 nn.DataParallel
     ):
         super(AutoDeviceModuleForSelfHook, self).__init__()
         self.paralleled = auto_to_device_cls(
@@ -101,6 +140,10 @@ class AutoDeviceModuleForSelfHook(nn.Module):
 
     def forward(self, *args, **kwargs):
         return self.paralleled(*args, **kwargs)
+
+
+def get_param_norm(module: nn.Module):
+    return torch.sqrt(sum([torch.norm(p) ** 2 for p in module.parameters()]))
 
 
 def get_sorted_function_inputs_from_args(fun, *args, **kwargs) -> dict[str, Any]:
@@ -229,7 +272,7 @@ def print_trainable_parameters(self: nn.Module) -> None:
     prompt tuning, the backbone transformer model is unmodified. num_parameters(only_trainable=True) returns number
     of trainable parameters of the backbone transformer model which can be different.
     """
-    trainable_params, all_param = self.get_nb_trainable_parameters()
+    trainable_params, all_param = get_nb_trainable_parameters(self)
 
     print(
         f"trainable params: {trainable_params:,d} || all params: {all_param:,d} || trainable%: {100 * trainable_params / all_param}"

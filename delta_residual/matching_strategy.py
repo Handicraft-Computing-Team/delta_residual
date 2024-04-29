@@ -7,6 +7,15 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 
+def is_contains(
+    module_simple_name: str, module_full_name: str, modified_modules: list[str]
+) -> bool:
+    for requirement in modified_modules:
+        if requirement in module_full_name:
+            return True
+    return False
+
+
 def is_match(
     module_simple_name: str, module_full_name: str, modified_modules: list[str]
 ) -> bool:

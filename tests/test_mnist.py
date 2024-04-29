@@ -1,6 +1,7 @@
 """Tests for Training ."""
 #%%
 import copy
+from functools import partial
 
 import pytest
 import torch
@@ -70,35 +71,64 @@ def evaluate(model, device, test_loader):
 #%%
 from delta_residual.general_delta import GeneralDeltaModel
 from delta_residual.parallel_adpater import LowRankAdapterLayer
-from delta_residual.utils import get_nb_trainable_parameters, set_requires_grad
+from delta_residual.utils import (
+    get_nb_trainable_parameters,
+    get_param_norm,
+    print_trainable_parameters,
+    set_requires_grad,
+)
 
 device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
 name = "facebook/dinov2-base"
-model = AutoModel.from_pretrained(name)
-delta = GeneralDeltaModel(
+model = AutoModel.from_pretrained(name).to(device)
+
+# delta = GeneralDeltaModel(
+#     model,
+#     modified_modules=[
+#         "attention.attention.query",
+#         "attention.attention.value",
+#     ],
+#     layer_delta_class=LowRankAdapterLayer,
+#     layer_config=dict(
+#         r=8,
+#         lora_alpha=16,
+#         lora_dropout=0.0,
+#     ),
+# ).to(device)
+# delta.prepare_for_training(model)
+from opendelta import LoraModel
+
+delta = LoraModel(
     model,
+    lora_r=16,
     modified_modules=[
         "attention.attention.query",
         "attention.attention.value",
     ],
-    layer_delta_class=LowRankAdapterLayer,
-    layer_config=dict(
-        r=8,
-        lora_alpha=16,
-        lora_dropout=0.0,
-    ),
 )
-delta.prepare_for_training(model)
-model = model.to(device)
+delta.freeze_module(
+    exclude=["deltas", "classifier"]
+)  # leave the delta tuning modules and the newly initialized classification head tunable.
+delta.log()  # optional: to visualize how the `model` changes.
+#%%
+
+
 b, c, h, w = 1, 3, 224, 224
 data = torch.randn(b, c, h, w)
 model(data.to(device))
+print_trainable_parameters(model)
+print_trainable_parameters(delta)
+logger.info(f"delta param norm now is {get_param_norm(delta)}")
+
 #%%
 # 其他准备
 # 参数
 lr = 0.01
-# epochs = 10
-epochs = 1
+# lr = 1e-4
+epochs = 10
+Subset = lambda x: x
+# epochs = 1
+# Subset = partial(Subset, range(100))
 momentum = 0.5
 batch_size = 64
 test_batch_size = 1000
@@ -142,7 +172,6 @@ train_loader = torch.utils.data.DataLoader(
                 [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
             ),
         ),
-        range(100),
     ),
     batch_size=batch_size,
     shuffle=True,
@@ -156,7 +185,6 @@ test_loader = torch.utils.data.DataLoader(
                 [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
             ),
         ),
-        range(100),
     ),
     batch_size=test_batch_size,
     shuffle=True,
@@ -165,5 +193,6 @@ test_loader = torch.utils.data.DataLoader(
 for epoch in range(1, epochs + 1):
     train(cls_model, device, train_loader, optimizer, epoch)
     evaluate(cls_model, device, test_loader)
+    logger.info(f"delta param norm now is {get_param_norm(delta)}")  # 没有训练到
 
 # %%
