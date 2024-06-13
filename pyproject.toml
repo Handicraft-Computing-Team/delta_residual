@@ -49,7 +49,7 @@ bigmodelvis = "^0.0.1"
 pytest = "^6.2.5"
 pytest-html = "^3.1.1"
 pytest-cov = "^3.0.0"
-bandit = "^1.7.1"
+bandit = "^1.7.9"
 black = "^22.12"
 isort = {extras = ["colors"], version = "^5.10.1"}
 pre-commit = "^2.15.0"
