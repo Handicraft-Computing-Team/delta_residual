@@ -42,7 +42,7 @@ rich = "^10.14.0"
 torch = "^2.2.2"
 loguru = "^0.7.2"
 transformers = "^4.39.3"
-datasets = "^2.18.0"
+datasets = "^2.20.0"
 bigmodelvis = "^0.0.1"
 
 [tool.poetry.dev-dependencies]
